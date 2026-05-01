@@ -242,6 +242,9 @@ def plot_perception_heatmap(results, results_dir, out_dir, max_steps=10):
     if not heatmaps:
         return
     vmax = max(np.max(h) for h in heatmaps.values())
+    tick_fontsize = 15
+    panel_fontsize = 20
+    legend_fontsize = 14
     for k in ks:
         if k not in heatmaps:
             continue
@@ -252,16 +255,16 @@ def plot_perception_heatmap(results, results_dir, out_dir, max_steps=10):
         plt.scatter(positions[focal_idx, 0], positions[focal_idx, 1], c="gold", s=140, marker="*", edgecolor="black", label="focal agent")
         circle = plt.Circle((positions[focal_idx, 0], positions[focal_idx, 1]), radius, color="black", fill=False, linestyle="--", linewidth=1)
         plt.gca().add_artist(circle)
-        plt.title(f"Perception Heatmap (k={k}, first {max_steps} steps)")
         plt.xlim(-0.05, 1.05)
         plt.ylim(-0.05, 1.05)
         plt.gca().set_aspect("equal", adjustable="box")
         plt.grid(True, alpha=0.2)
-        plt.legend(loc="best")
+        plt.tick_params(axis="both", labelsize=tick_fontsize)
+        plt.legend(loc="best", fontsize=legend_fontsize)
         save_fig(os.path.join(out_dir, f"perception_heatmap_k{k}_first_{max_steps}"))
 
     # Combined comparison panel
-    fig, axes = plt.subplots(1, len(heatmaps), figsize=(6 * len(heatmaps), 6), sharex=True, sharey=True)
+    fig, axes = plt.subplots(1, len(heatmaps), figsize=(6.5 * len(heatmaps), 6.5), sharex=True, sharey=True)
     if len(heatmaps) == 1:
         axes = [axes]
     for ax, k in zip(axes, ks):
@@ -273,12 +276,12 @@ def plot_perception_heatmap(results, results_dir, out_dir, max_steps=10):
         ax.scatter(positions[focal_idx, 0], positions[focal_idx, 1], c="gold", s=140, marker="*", edgecolor="black")
         circle = plt.Circle((positions[focal_idx, 0], positions[focal_idx, 1]), radius, color="black", fill=False, linestyle="--", linewidth=1)
         ax.add_artist(circle)
-        ax.set_title(f"k={k}")
+        ax.set_title(rf"$\kappa={k}$", fontsize=panel_fontsize)
         ax.set_xlim(-0.05, 1.05)
         ax.set_ylim(-0.05, 1.05)
         ax.set_aspect("equal", adjustable="box")
         ax.grid(True, alpha=0.2)
-    fig.suptitle(f"Perception Heatmap Comparison (first {max_steps} steps)")
+        ax.tick_params(axis="both", labelsize=tick_fontsize)
     save_fig(os.path.join(out_dir, f"perception_heatmap_compare_first_{max_steps}"))
 
 

@@ -8,6 +8,7 @@ This repository contains the GMFS implementation for the robotics warehouse coor
 - `main.py`: Runner for training/evaluation from JSON configs.
 - `plot_robotics_results.py`: Plots one scaling sweep.
 - `plot_n100_noise_comparison.py`: Plots the n=100 clean/noisy comparison.
+- `config_robotics.json`: Legacy n=25 smoke/default config.
 - `config_robotics_n1000.json`: n=1000 scaling experiment.
 - `config_robotics_n100_clean.json`, `config_robotics_n100_gaussian.json`, `config_robotics_n100_subgaussian.json`: n=100 robustness experiments.
 - `slurm/`: Generic Slurm templates. They intentionally avoid account names, personal paths, and site-specific partitions.
@@ -17,6 +18,11 @@ Run the n=1000 scaling sweep:
 ```bash
 python main.py --config config_robotics_n1000.json
 python plot_robotics_results.py --results_dir results_robotics_n1000
+```
+
+Run the legacy n=25 default smoke config:
+```bash
+python main.py --config config_robotics.json
 ```
 
 Run one n=1000 kappa:
