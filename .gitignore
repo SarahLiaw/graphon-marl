@@ -1,7 +1,12 @@
 mean-field-venv
-__pycache__
+__pycache__/
+*.py[cod]
 centralized_q_model.pkl
 *.log
 *.out
 *.err
+logs/
 results_robotics/
+results_robotics*/
+plots_n100_noise/
+tmp/

@@ -9,7 +9,7 @@ Contains:
 
 import numpy as np
 from itertools import combinations_with_replacement
-from typing import List, Tuple, Callable, Dict, Any
+from typing import List, Tuple, Callable, Dict, Any, Optional
 
 class State:
     """Base class for environment states."""
@@ -24,7 +24,8 @@ class Action:
 class TransitionFunction:
     """P(s' | s, a, g)."""
     def sample_next_state(self, local_state: State, local_action: Action, 
-                          neighborhood_dist: List[float]) -> State:
+                          neighborhood_dist: List[float],
+                          rng: Optional[np.random.RandomState] = None) -> State:
         raise NotImplementedError
 
 class RewardFunction:
@@ -91,10 +92,38 @@ class RadialGraphon(Graphon):
         dist = np.linalg.norm(x_arr - y_arr)
         return 1.0 if dist <= self.radius else 0.0
 
-def build_grid_positions(grid_size: int) -> np.ndarray:
-    """Create a fixed grid of positions in [0,1]^2."""
-    coords = np.linspace(0.0, 1.0, grid_size)
-    positions = [(x, y) for y in coords for x in coords]
+def build_grid_positions(grid_size: Optional[int] = None,
+                         n_agents: Optional[int] = None,
+                         grid_rows: Optional[int] = None,
+                         grid_cols: Optional[int] = None) -> np.ndarray:
+    """Create a lattice of positions in [0,1]^2.
+
+    By default this preserves the old square-grid behavior. When ``n_agents`` is
+    provided, the lattice can be truncated to exactly that many agents, which lets
+    us run non-square population sizes such as n=1000.
+    """
+    if grid_rows is None and grid_cols is None:
+        if grid_size is not None:
+            grid_rows = grid_size
+            grid_cols = grid_size
+        elif n_agents is not None:
+            grid_rows = int(np.floor(np.sqrt(n_agents)))
+            grid_rows = max(grid_rows, 1)
+            grid_cols = int(np.ceil(n_agents / grid_rows))
+        else:
+            raise ValueError("Must provide grid_size or n_agents to build positions.")
+    elif grid_rows is None or grid_cols is None:
+        raise ValueError("grid_rows and grid_cols must be provided together.")
+
+    x_coords = np.linspace(0.0, 1.0, grid_cols)
+    y_coords = np.linspace(0.0, 1.0, grid_rows)
+    positions = [(x, y) for y in y_coords for x in x_coords]
+    if n_agents is not None:
+        if n_agents > len(positions):
+            raise ValueError(
+                f"Requested n_agents={n_agents}, but grid only has {len(positions)} positions."
+            )
+        positions = positions[:n_agents]
     return np.asarray(positions, dtype=float)
 
 def radial_graphon_weights(positions: np.ndarray, radius: float) -> np.ndarray:
@@ -142,7 +171,8 @@ class GMFS_Q_Function:
     """
     def __init__(self, k: int, state_space: List[State], action_space: List[Action],
                  transition_func: TransitionFunction, reward_func: RewardFunction, 
-                 gamma: float = 0.9, mc_samples: int = 10):
+                 gamma: float = 0.9, mc_samples: int = 10,
+                 rng_seed: int = 0):
         self.k = k
         self.state_space = state_space
         self.action_space = action_space
@@ -150,6 +180,8 @@ class GMFS_Q_Function:
         self.reward_func = reward_func
         self.gamma = gamma
         self.mc_samples = mc_samples
+        self.rng_seed = int(rng_seed)
+        self.rng = np.random.RandomState(self.rng_seed)
         
         self.n_states = len(state_space)
         self.n_actions = len(action_space)
@@ -158,6 +190,7 @@ class GMFS_Q_Function:
         self.z_distributions = generate_distributions(k, len(self.joint_bins))
         self.n_z = len(self.z_distributions)
         self.marginal_map = {i: z for i, z in enumerate(self.z_distributions)}
+        self.z_to_idx = {z: i for i, z in enumerate(self.z_distributions)}
         
         self.Q = np.zeros((self.n_states, self.n_actions, self.n_z), dtype=np.float32)
         self.state_to_idx = {s: i for i, s in enumerate(state_space)}
@@ -192,7 +225,9 @@ class GMFS_Q_Function:
                         samples = []
                         for _ in range(self.mc_samples):
                             # 1. Evolve focal agent
-                            s_next = self.transition_func.sample_next_state(s, a, list(g_current))
+                            s_next = self.transition_func.sample_next_state(
+                                s, a, list(g_current), rng=self.rng
+                            )
                             s_next_idx = self.state_to_idx[s_next]
                             
                             # 2. Evolve neighbor population
@@ -206,16 +241,17 @@ class GMFS_Q_Function:
                                 a_n = self.action_space[a_n_idx]
                                 
                                 for _ in range(count):
-                                    sn_next = self.transition_func.sample_next_state(s_n, a_n, list(g_current))
+                                    sn_next = self.transition_func.sample_next_state(
+                                        s_n, a_n, list(g_current), rng=self.rng
+                                    )
                                     g_next_counts[self.state_to_idx[sn_next]] += 1
                             
 
                             g_next_tuple = tuple(g_next_counts)
                             try:
-                                z_next_idx = self.z_distributions.index(g_next_tuple)
+                                z_next_idx = self.z_to_idx[g_next_tuple]
                                 samples.append((s_next_idx, z_next_idx))
-                            except ValueError:
-
+                            except KeyError:
                                 samples.append((s_next_idx, z_idx))
                                 
                         self.transition_cache[cache_key] = samples
@@ -243,20 +279,42 @@ def offline_learning(q_func: GMFS_Q_Function, steps: int):
     return q_func, deltas
 
 def online_execution(n_agents: int, horizon: int, k: int, graphon: Graphon,
-                     q_func: GMFS_Q_Function, 
+                     q_func: GMFS_Q_Function,
                      state_space: List[State], action_space: List[Action],
-                     transition_func: TransitionFunction, 
+                     transition_func: TransitionFunction,
                      seed: int = 42,
                      return_diagnostics: bool = False,
                      focal_idx: int = None,
-                     positions: np.ndarray = None):
+                     positions: np.ndarray = None,
+                     noise_type: Optional[str] = None,
+                     noise_sigma: float = 0.0):
     """Run Algo 2."""
     rng = np.random.RandomState(seed)
     # Init agents
     agents = [Agent(i, (i+1)/n_agents, state_space, action_space) for i in range(n_agents)]
-    for a in agents: a.reset(rng.choice(state_space))
-    
-    W = graphon.get_normalized_weights(n_agents)
+    for a in agents:
+        a.reset(rng.choice(state_space))
+
+    state_to_idx = q_func.state_to_idx
+    if positions is not None:
+        if len(positions) != n_agents:
+            raise ValueError(
+                f"Expected {n_agents} positions, got {len(positions)}."
+            )
+        W = graphon.get_normalized_weights(n_agents, positions=positions)
+    else:
+        W = graphon.get_normalized_weights(n_agents)
+
+    if noise_type is not None and noise_sigma > 0.0:
+        if noise_type == 'gaussian':
+            W = W + rng.normal(0.0, noise_sigma, W.shape)
+        elif noise_type == 'subgaussian':
+            # Bounded uniform noise; subgaussian with parameter sigma/sqrt(3).
+            W = W + rng.uniform(-noise_sigma, noise_sigma, W.shape)
+        W = np.clip(W, 0.0, None)
+        row_sums = W.sum(axis=1, keepdims=True)
+        row_sums[row_sums == 0] = 1.0
+        W = W / row_sums
     rewards = []
     avg_hat_g2 = []
     avg_true_g2 = []
@@ -269,27 +327,44 @@ def online_execution(n_agents: int, horizon: int, k: int, graphon: Graphon,
     agent_states_t_end = None
     
     for t in range(horizon):
+        state_indices = np.fromiter(
+            (state_to_idx[a.get_state()] for a in agents),
+            dtype=np.int64,
+            count=n_agents
+        )
+        one_hot_states = np.eye(len(state_space), dtype=float)[state_indices]
+        true_g_all = W @ one_hot_states
+
         if return_diagnostics and t == 0:
-            agent_states_t0 = [state_space.index(a.get_state()) for a in agents]
+            agent_states_t0 = state_indices.tolist()
         # 1. Action Selection
         actions = []
         action_idx = []
         hat_g2_step = []
         hat_g_probs = []
+        if k > 0:
+            p0 = np.clip(true_g_all[:, 0], 0.0, 1.0)
+            g0 = rng.binomial(k, p0)
+            remaining = k - g0
+            denom = np.clip(1.0 - p0, 1e-12, None)
+            p1_cond = np.divide(true_g_all[:, 1], denom, out=np.zeros_like(p0), where=denom > 0.0)
+            p1_cond = np.clip(p1_cond, 0.0, 1.0)
+            g1 = rng.binomial(remaining, p1_cond)
+            g2 = remaining - g1
+            sampled_counts = np.stack((g0, g1, g2), axis=1).astype(int)
+        else:
+            sampled_counts = np.zeros((n_agents, len(state_space)), dtype=int)
+
         for i in range(n_agents):
-            # Sample k neighbors
-            dist = W[i, :]
-            dist[i] = 0 # No self loop
-            dist /= dist.sum()
-            neighbors = rng.choice(n_agents, size=k, p=dist, replace=True)
-            
-            # Form g_hat (Just state counts)
-            g_hat = [0]*len(state_space)
-            for nid in neighbors:
-                g_hat[state_space.index(agents[nid].get_state())] += 1
-            g_hat = tuple(g_hat)
+            g_hat = tuple(sampled_counts[i].tolist())
+
             if return_diagnostics:
                 if i == focal_idx:
+                    if k > 0:
+                        neighbors = rng.choice(n_agents, size=k, p=W[i], replace=True)
+                        g_hat = tuple(np.bincount(state_indices[neighbors], minlength=len(state_space)).tolist())
+                    else:
+                        neighbors = np.asarray([], dtype=int)
                     if t == 0:
                         focal_neighbors = neighbors.tolist()
                         focal_hat_g = g_hat
@@ -301,14 +376,14 @@ def online_execution(n_agents: int, horizon: int, k: int, graphon: Graphon,
             hat_g2_step.append(g_hat[2] / float(k) if k > 0 else 0.0)
             
             # Greedy Policy
-            s_idx = state_space.index(agents[i].get_state())
-            
+            s_idx = state_indices[i]
+
             try:
-                z_idx = q_func.z_distributions.index(g_hat)
+                z_idx = q_func.z_to_idx[g_hat]
                 # Greedy action
                 a_idx = np.argmax(q_func.Q[s_idx, :, z_idx])
                 best_a = action_space[a_idx]
-            except ValueError:
+            except KeyError:
                 best_a = rng.choice(action_space)
                 a_idx = action_space.index(best_a)
 
@@ -320,19 +395,16 @@ def online_execution(n_agents: int, horizon: int, k: int, graphon: Graphon,
         true_g2_step = []
         tv_step = []
         for i in range(n_agents):
-            # True g (weighted)
-            true_g = [0.0]*len(state_space)
-            for j in range(n_agents):
-                if i==j: continue
-                s_idx = state_space.index(agents[j].get_state())
-                true_g[s_idx] += W[i, j]
+            true_g = true_g_all[i].tolist()
             true_g2_step.append(true_g[2])
             if return_diagnostics:
                 tv_step.append(0.5 * float(np.sum(np.abs(hat_g_probs[i] - true_g))))
             
             r = q_func.reward_func.compute_reward(agents[i].get_state(), actions[i], true_g)
             step_rew += r
-            ns = transition_func.sample_next_state(agents[i].get_state(), actions[i], true_g)
+            ns = transition_func.sample_next_state(
+                agents[i].get_state(), actions[i], true_g, rng=rng
+            )
             next_states.append(ns)
         
         rewards.append(step_rew / n_agents)
@@ -345,7 +417,7 @@ def online_execution(n_agents: int, horizon: int, k: int, graphon: Graphon,
         for i, ns in enumerate(next_states):
             agents[i].set_state(ns)
     if return_diagnostics:
-        agent_states_t_end = [state_space.index(a.get_state()) for a in agents]
+        agent_states_t_end = [state_to_idx[a.get_state()] for a in agents]
             
     # Compute discounted return
     ret = 0

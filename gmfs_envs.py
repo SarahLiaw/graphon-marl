@@ -25,7 +25,9 @@ class FormationAction(Action):
     def __repr__(self): return str(self.value)
 
 class FormationTransition(TransitionFunction):
-    def sample_next_state(self, s_obj, a_obj, g):
+    def sample_next_state(self, s_obj, a_obj, g, rng=None):
+        if rng is None:
+            rng = np.random
         s, a = s_obj.value, a_obj.value
         # Weighted neighborhood average state
         # g is [prob(-1), prob(0), prob(1)]
@@ -34,7 +36,7 @@ class FormationTransition(TransitionFunction):
         # Dynamics: s' = clamp(s + a + drift(g_mean))
         # This is a simplification of the reference which makes drift proportional to difference
         drift = 0.5 * (current_g_mean - s)
-        noise = np.random.normal(0, 0.1)
+        noise = rng.normal(0, 0.1)
         
         val = s + a + drift + noise
         
@@ -74,7 +76,9 @@ class TrafficAction(Action):
     def __repr__(self): return f"A{self.value}"
 
 class TrafficTransition(TransitionFunction):
-    def sample_next_state(self, s_obj, a_obj, g):
+    def sample_next_state(self, s_obj, a_obj, g, rng=None):
+        if rng is None:
+            rng = np.random
         s, a = s_obj.value, a_obj.value
         # g is probabilities for states [1, 2, 3, 4, 5]
         # Avg congestion
@@ -86,7 +90,7 @@ class TrafficTransition(TransitionFunction):
         prob_worsen = 0.1 + (0.1 * avg_levels) - (0.2 if a == 1 else 0.0)
         prob_improve = 0.3 - (0.05 * avg_levels) + (0.1 if a == 0 else 0.0)
         
-        rand = np.random.rand()
+        rand = rng.rand()
         if rand < prob_worsen:
             return TrafficState(min(5, s + 1))
         elif rand < prob_worsen + prob_improve:
@@ -137,7 +141,7 @@ class RoboticsTransition(TransitionFunction):
     def sample_next_state(self, s_obj, a_obj, z, rng=None):
         # Congestion-dependent success; g can be counts or probabilities.
         if rng is None:
-            rng = np.random.RandomState()
+            rng = np.random
         g = np.asarray(z, dtype=float)
         total = float(np.sum(g))
         if total > 0:

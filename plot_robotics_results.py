@@ -1,4 +1,5 @@
 import argparse
+import csv
 import glob
 import json
 import os
@@ -9,6 +10,12 @@ import matplotlib.pyplot as plt
 
 def load_kappa_results(results_dir):
     data = {}
+    summary_path = os.path.join(results_dir, "data_full.json")
+    if os.path.exists(summary_path):
+        with open(summary_path, "r") as f:
+            payload = json.load(f)
+        for k_str, k_data in payload.get("results", {}).items():
+            data[int(k_str)] = k_data
     for path in glob.glob(os.path.join(results_dir, "kappa_*", "data_full.json")):
         with open(path, "r") as f:
             payload = json.load(f)
@@ -18,44 +25,70 @@ def load_kappa_results(results_dir):
             data[k] = k_data
     return data
 
-
-
-def parse_linear_logs(results_dir):
-    data = {}
-    for path in glob.glob(os.path.join(results_dir, "linear_run_k*_more.log")) + \
-                glob.glob(os.path.join(results_dir, "linear_run_k*.log")):
-        with open(path, "r") as f:
-            lines = f.readlines()
-        for line in lines:
-            if line.strip().startswith("Result k="):
-                # Result k=20: 93.8529 +/- 1.3164
-                parts = line.strip().split()
-                k = int(parts[1].split("=")[1].replace(":", ""))
-                mean = float(parts[2])
-                stderr = float(parts[4])
-                data[k] = {"mean": mean, "stderr": stderr}
-    return data
-
-
 def ensure_dir(path):
     os.makedirs(path, exist_ok=True)
 
 
-def select_ks(available, preferred):
+def evenly_spaced_ks(available, count):
+    available = sorted(set(available))
+    if len(available) <= count:
+        return available
+    idx = np.linspace(0, len(available) - 1, num=count, dtype=int)
+    return [available[i] for i in sorted(set(idx.tolist()))]
+
+
+def select_ks(available, preferred=None, fallback_count=3):
+    available = sorted(set(available))
+    if not available:
+        return []
     selected = []
-    for k in preferred:
-        if k in available:
-            selected.append(k)
-    if not selected and available:
-        available = sorted(available)
-        selected = [available[0], available[len(available)//2], available[-1]]
-        selected = sorted(list(set(selected)))
+    if preferred is not None:
+        for k in preferred:
+            if k in available:
+                selected.append(k)
+    if not selected:
+        return evenly_spaced_ks(available, fallback_count)
+    for endpoint in (available[0], available[-1]):
+        if endpoint not in selected:
+            selected.append(endpoint)
+    selected = sorted(set(selected))
+    if len(selected) < fallback_count:
+        for k in evenly_spaced_ks(available, fallback_count):
+            if k not in selected:
+                selected.append(k)
+        selected = sorted(set(selected))
+    if len(selected) > fallback_count:
+        selected = evenly_spaced_ks(selected, fallback_count)
     return selected
 
 
 def save_fig(base_path):
     plt.savefig(base_path + ".png")
     plt.savefig(base_path + ".pdf")
+
+
+def export_summary(results, out_dir):
+    rows = []
+    for k in sorted(results.keys()):
+        rows.append({
+            "kappa": k,
+            "mean": results[k].get("mean"),
+            "std": results[k].get("std"),
+            "stderr": results[k].get("stderr"),
+            "training_time": results[k].get("training_time"),
+            "q_table_size": results[k].get("q_table_size"),
+            "n_z": results[k].get("n_z"),
+        })
+    if not rows:
+        return
+    out_csv = os.path.join(out_dir, "kappa_summary.csv")
+    with open(out_csv, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+    out_json = os.path.join(out_dir, "kappa_summary.json")
+    with open(out_json, "w") as f:
+        json.dump(rows, f, indent=2)
 
 
 def plot_reward_vs_k(results, out_dir):
@@ -70,13 +103,11 @@ def plot_reward_vs_k(results, out_dir):
     plt.ylabel("Discounted Return")
     plt.title("Robotics GMFS: Discounted Return vs k")
     plt.grid(True, alpha=0.3)
-    k_max = ks[-1]
-    plt.axhline(means[-1], color="gray", linestyle="--", linewidth=1)
     save_fig(os.path.join(out_dir, "discounted_reward_vs_k"))
 
 
 def plot_bellman_delta(results, out_dir):
-    ks = select_ks(results.keys(), [1, 6, 24])
+    ks = select_ks(results.keys(), fallback_count=3)
     plt.figure(figsize=(10, 6))
     plotted = False
     for k in ks:
@@ -119,7 +150,7 @@ def plot_complexity(results, out_dir):
 
 
 def plot_policy_diagnostics(results, out_dir):
-    ks = select_ks(results.keys(), [1, 24])
+    ks = select_ks(results.keys(), fallback_count=2)
     plt.figure(figsize=(10, 6))
     plotted = False
     for k in ks:
@@ -199,7 +230,7 @@ def plot_perception_heatmap(results, results_dir, out_dir, max_steps=10):
     data = np.load(graphon_path)
     positions = data["positions"]
     radius = float(data["radius"])
-    ks = select_ks(results.keys(), [2, 8, 24])
+    ks = select_ks(results.keys(), fallback_count=3)
     heatmaps = {}
     focal_indices = {}
     for k in ks:
@@ -368,7 +399,8 @@ def plot_perception_time_evolution_compare(results, results_dir, out_dir, ks=(2,
         cbar = fig.colorbar(mappable, ax=axes, fraction=0.02, pad=0.02)
         cbar.set_label("Sample density (counts)", fontsize=14)
         cbar.ax.tick_params(labelsize=12)
-    save_fig(os.path.join(out_dir, "perception_time_evolution_compare_k2_k8_k24"))
+    suffix = "_".join(f"k{k}" for k in k_list)
+    save_fig(os.path.join(out_dir, f"perception_time_evolution_compare_{suffix}"))
 
 
 def plot_graphon_heatmap(results_dir, out_dir):
@@ -403,7 +435,7 @@ def plot_warehouse_heatmap(results, results_dir, out_dir):
     positions = data["positions"]
     grid_size = int(data["grid_size"])
     radius = float(data["radius"])
-    ks = select_ks(results.keys(), [1, 24])
+    ks = select_ks(results.keys(), fallback_count=2)
     for k in ks:
         diagnostics = results[k].get("diagnostics")
         if not diagnostics:
@@ -436,7 +468,7 @@ def plot_coordination_compare(results, results_dir, out_dir):
     data = np.load(graphon_path)
     positions = data["positions"]
     radius = float(data["radius"])
-    ks = select_ks(results.keys(), [2, 24])
+    ks = select_ks(results.keys(), fallback_count=2)
     if len(ks) < 2:
         return
     k_left, k_right = ks[0], ks[-1]
@@ -463,12 +495,12 @@ def plot_coordination_compare(results, results_dir, out_dir):
         ax.grid(True, alpha=0.2)
     axes[0].legend(loc="best")
     fig.suptitle("Coordination Heatmap Comparison")
-    save_fig(os.path.join(out_dir, "coordination_compare_k2_k24"))
+    save_fig(os.path.join(out_dir, f"coordination_compare_k{k_left}_k{k_right}"))
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--results_dir", type=str, default="results_robotics_linear")
+    parser.add_argument("--results_dir", type=str, default="results_robotics_n1000")
     parser.add_argument("--out_dir", type=str, default=None)
     args = parser.parse_args()
 
@@ -478,11 +510,10 @@ def main():
 
     results = load_kappa_results(results_dir)
     if not results:
-        results = parse_linear_logs(".")
-    if not results:
         print("No results found to plot.")
         return
 
+    export_summary(results, out_dir)
     plot_reward_vs_k(results, out_dir)
     plot_bellman_delta(results, out_dir)
     plot_complexity(results, out_dir)
@@ -490,9 +521,14 @@ def main():
     plot_tv_decay(results, out_dir)
     plot_graphon_heatmap(results_dir, out_dir)
     plot_perception_heatmap(results, results_dir, out_dir)
-    plot_perception_time_evolution(results, results_dir, out_dir, k=8)
-    plot_perception_time_evolution(results, results_dir, out_dir, k=24)
-    plot_perception_time_evolution_compare(results, results_dir, out_dir, ks=(2, 8, 24))
+    for k in select_ks(results.keys(), fallback_count=2):
+        plot_perception_time_evolution(results, results_dir, out_dir, k=k)
+    plot_perception_time_evolution_compare(
+        results,
+        results_dir,
+        out_dir,
+        ks=tuple(select_ks(results.keys(), fallback_count=3)),
+    )
     plot_warehouse_heatmap(results, results_dir, out_dir)
     plot_coordination_compare(results, results_dir, out_dir)
 

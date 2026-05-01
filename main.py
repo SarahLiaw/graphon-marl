@@ -28,6 +28,28 @@ def load_config(path):
     with open(path, 'r') as f:
         return json.load(f)
 
+
+def sanitize_payload(results):
+    return {
+        k: {
+            key: float(value) if isinstance(value, (int, float, np.floating)) else value
+            for key, value in payload.items()
+        }
+        for k, payload in results.items()
+    }
+
+
+def write_result_payload(out_dir, env_name, cfg, payload):
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, 'data.json'), 'w') as f:
+        json.dump(payload, f, indent=2)
+    with open(os.path.join(out_dir, 'data_full.json'), 'w') as f:
+        json.dump({
+            'environment': env_name,
+            'config': cfg,
+            'results': payload
+        }, f, indent=2)
+
 def get_env_components(config):
     env_name = config['environment']
     
@@ -53,20 +75,27 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, default='config.json')
     parser.add_argument('--kappa', type=int, default=None)
+    parser.add_argument('--output_dir', type=str, default=None)
     args = parser.parse_args()
     
     cfg = load_config(args.config)
     print(f"Loaded config for: {cfg['environment']}")
     
-    base_output_dir = cfg.get('output_dir', 'results')
+    base_output_dir = args.output_dir or cfg.get('output_dir', 'results')
     os.makedirs(base_output_dir, exist_ok=True)
-    
+
     env_name = cfg['environment']
     k_values = cfg['k_values']
     if args.kappa is not None:
         k_values = [args.kappa]
     n_agents = cfg['n_agents']
     num_runs = cfg.get('num_eval_runs', 100)
+    n_training_seeds = int(cfg.get('n_training_seeds', 1))
+    base_seed = int(cfg.get('seed', 0))
+    training_seed = int(cfg.get('training_seed', base_seed))
+    eval_seed = int(cfg.get('eval_seed', base_seed))
+    noise_type = cfg.get('noise_type', None)
+    noise_sigma = float(cfg.get('noise_sigma', 0.0))
     results = {}
     
     if env_name == 'robotics':
@@ -75,8 +104,15 @@ def main():
         trans = RoboticsTransition()
         rew = RoboticsReward(L=cfg.get('L', 2.0))
         
-        grid_size = cfg.get('grid_size', 5)
-        positions = build_grid_positions(grid_size)
+        grid_size = cfg.get('grid_size')
+        grid_rows = cfg.get('grid_rows')
+        grid_cols = cfg.get('grid_cols')
+        positions = build_grid_positions(
+            grid_size=grid_size,
+            n_agents=n_agents,
+            grid_rows=grid_rows,
+            grid_cols=grid_cols,
+        )
         radius = cfg.get('radius', 0.3)
         graphon = RadialGraphon(radius=radius)
         
@@ -93,50 +129,93 @@ def main():
             if args.kappa is not None:
                 output_dir = os.path.join(base_output_dir, f'kappa_{k}')
                 os.makedirs(output_dir, exist_ok=True)
-            print(f"\nRunning Value Iteration for k={k}...")
-            
-            # 1. Initialize Q-Function (Operator T_hat)
-            q_func = GMFS_Q_Function(k=k, state_space=states, action_space=actions,
-                    transition_func=trans, reward_func=rew, gamma=gamma, mc_samples=mc_samples)
-            
-            # 2. Offline Value Iteration (T_hat^T Q)
-            start_time = time.time()
-            q_func, deltas = offline_learning(q_func, steps=training_steps)
-            training_time = time.time() - start_time
-            
-            # 3. Online Execution (Evaluation)
-            returns = []
-            diagnostics = []
-            for run in range(num_runs):
-                ret = online_execution(
-                    n_agents=n_agents, 
-                    horizon=cfg.get('eval_horizon', 100),
-                    k=k, 
-                    graphon=graphon, 
-                    q_func=q_func,
-                    state_space=states, 
+            print(f"\nRunning Value Iteration for k={k} ({n_training_seeds} training seed(s))...")
+
+            all_returns = []
+            all_deltas = None
+            total_training_time = 0.0
+            last_q_func = None
+            all_diagnostics = []
+            per_seed_returns = []
+
+            for seed_run in range(n_training_seeds):
+                # Use non-overlapping seed blocks per training seed
+                seed_offset = seed_run * 100000
+                t_seed = training_seed + seed_offset + k
+                e_seed = eval_seed + seed_offset
+
+                # 1. Initialize Q-Function (Operator T_hat)
+                q_func = GMFS_Q_Function(
+                    k=k,
+                    state_space=states,
                     action_space=actions,
-                    transition_func=trans, 
-                    seed=cfg['seed'] + run
+                    transition_func=trans,
+                    reward_func=rew,
+                    gamma=gamma,
+                    mc_samples=mc_samples,
+                    rng_seed=t_seed,
                 )
-                returns.append(ret)
-                if (run+1) % 5 == 0:
-                    print(f"  Eval Run {run+1}/{num_runs}: {ret:.4f}", flush=True)
-            
+
+                # 2. Offline Value Iteration (T_hat^T Q)
+                start_time = time.time()
+                q_func, deltas = offline_learning(q_func, steps=training_steps)
+                training_time = time.time() - start_time
+                total_training_time += training_time
+                if all_deltas is None:
+                    all_deltas = deltas
+                last_q_func = q_func
+
+                # 3. Online Execution (Evaluation)
+                seed_returns = []
+                diagnostics = []
+                for run in range(num_runs):
+                    capture_diagnostics = debug and run < debug_max_runs and seed_run == 0
+                    outcome = online_execution(
+                        n_agents=n_agents,
+                        horizon=cfg.get('eval_horizon', 100),
+                        k=k,
+                        graphon=graphon,
+                        q_func=q_func,
+                        state_space=states,
+                        action_space=actions,
+                        transition_func=trans,
+                        seed=e_seed + 1000 * k + run,
+                        return_diagnostics=capture_diagnostics,
+                        focal_idx=focal_idx,
+                        positions=positions,
+                        noise_type=noise_type,
+                        noise_sigma=noise_sigma,
+                    )
+                    if capture_diagnostics:
+                        ret, diag = outcome
+                        diagnostics.append(diag)
+                    else:
+                        ret = outcome
+                    seed_returns.append(ret)
+                    all_returns.append(ret)
+                    if (run + 1) % 5 == 0:
+                        print(f"  Seed {seed_run} Eval {run+1}/{num_runs}: {ret:.4f}", flush=True)
+
+                per_seed_returns.append([float(r) for r in seed_returns])
+                if diagnostics:
+                    all_diagnostics.extend(diagnostics)
+
+            total_runs = len(all_returns)
             results[k] = {
-                'mean': float(np.mean(returns)),
-                'std': float(np.std(returns)),
-                'stderr': float(np.std(returns)/np.sqrt(num_runs)),
-                'returns': [float(r) for r in returns],
-                'training_deltas': [float(d) for d in deltas],
-                'training_time': float(training_time),
-                'q_table_size': int(q_func.n_states * q_func.n_actions * q_func.n_z),
-                'n_z': int(q_func.n_z)
+                'mean': float(np.mean(all_returns)),
+                'std': float(np.std(all_returns)),
+                'stderr': float(np.std(all_returns) / np.sqrt(total_runs)),
+                'returns': [float(r) for r in all_returns],
+                'per_seed_returns': per_seed_returns,
+                'n_training_seeds': n_training_seeds,
+                'training_deltas': [float(d) for d in all_deltas],
+                'training_time': float(total_training_time),
+                'q_table_size': int(last_q_func.n_states * last_q_func.n_actions * last_q_func.n_z),
+                'n_z': int(last_q_func.n_z),
             }
-            if debug and diagnostics:
-                results[k]['diagnostics'] = diagnostics
-                # Save quick plots for the first diagnostic run
-                diag = diagnostics[0]
+            if debug and all_diagnostics:
+                results[k]['diagnostics'] = all_diagnostics
+                diag = all_diagnostics[0]
                 steps = list(range(len(diag["avg_hat_g2"])))
                 plt.figure(figsize=(10, 6))
                 plt.plot(steps, diag["avg_hat_g2"], label='avg_hat_g2')
@@ -147,7 +226,7 @@ def main():
                 plt.legend()
                 plt.grid(True, alpha=0.3)
                 plt.savefig(os.path.join(output_dir, f'g2_trace_k{k}.png'))
-                
+
                 action_fracs = np.array(diag["action_fracs"])
                 plt.figure(figsize=(10, 6))
                 plt.plot(steps, action_fracs[:, 0], label='a=0 (Idle)')
@@ -159,10 +238,27 @@ def main():
                 plt.legend()
                 plt.grid(True, alpha=0.3)
                 plt.savefig(os.path.join(output_dir, f'action_fracs_k{k}.png'))
-            print(f" Result k={k}: {results[k]['mean']:.4f} +/- {results[k]['stderr']:.4f}")
-        
+            print(f" Result k={k} ({n_training_seeds} seeds x {num_runs} runs = {total_runs} total): "
+                  f"{results[k]['mean']:.4f} +/- {results[k]['stderr']:.4f}")
+
+            clean_single = sanitize_payload({k: results[k]})
+            write_result_payload(
+                os.path.join(base_output_dir, f'kappa_{k}'),
+                env_name,
+                cfg,
+                clean_single,
+            )
+
         # Save graphon data for reuse
-        np.savez(os.path.join(base_output_dir, 'graphon_data.npz'), positions=positions, radius=radius, grid_size=grid_size)
+        np.savez(
+            os.path.join(base_output_dir, 'graphon_data.npz'),
+            positions=positions,
+            radius=radius,
+            grid_size=-1 if grid_size is None else grid_size,
+            grid_rows=-1 if grid_rows is None else grid_rows,
+            grid_cols=-1 if grid_cols is None else grid_cols,
+            n_agents=n_agents,
+        )
     else:
         # Setup for existing environments
         states, actions, trans, rew = get_env_components(cfg)
@@ -188,7 +284,8 @@ def main():
                 k=k, state_space=states, action_space=actions,
                 transition_func=trans, reward_func=rew,
                 gamma=cfg.get('gamma', 0.9),
-                mc_samples=cfg.get('mc_samples', 20)
+                mc_samples=cfg.get('mc_samples', 20),
+                rng_seed=training_seed + k,
             )
             
             q_func, deltas = offline_learning(q_func, steps=T)
@@ -200,7 +297,7 @@ def main():
                     n_agents=n_agents, horizon=cfg.get('horizon', 100),
                     k=k, graphon=graphon, q_func=q_func,
                     state_space=states, action_space=actions,
-                    transition_func=trans, seed=i*100 + k
+                    transition_func=trans, seed=eval_seed + 1000 * k + i
                 )
                 returns.append(ret)
                 if (run+1) % 5 == 0:
@@ -229,9 +326,7 @@ def main():
         print(f"\nSaved plot to {base_output_dir}/plot.png")
     
     # Save raw data (compat + extended)
-    clean_res = {k: {k2: float(v2) if isinstance(v2, (int, float, np.floating)) else v2
-                     for k2, v2 in v.items()}
-                 for k, v in results.items()}
+    clean_res = sanitize_payload(results)
     if args.kappa is None:
         out_json_dir = base_output_dir
         clean_payload = clean_res
@@ -239,16 +334,8 @@ def main():
         out_json_dir = os.path.join(base_output_dir, f'kappa_{k_values[0]}')
         os.makedirs(out_json_dir, exist_ok=True)
         clean_payload = {k_values[0]: clean_res[k_values[0]]}
-    
-    with open(os.path.join(out_json_dir, 'data.json'), 'w') as f:
-        json.dump(clean_payload, f, indent=2)
-    with open(os.path.join(out_json_dir, 'data_full.json'), 'w') as f:
-        payload = {
-            'environment': env_name,
-            'config': cfg,
-            'results': clean_payload
-        }
-        json.dump(payload, f, indent=2)
+
+    write_result_payload(out_json_dir, env_name, cfg, clean_payload)
 
 if __name__ == '__main__':
     main()
