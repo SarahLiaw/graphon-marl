@@ -9,6 +9,7 @@ This repository contains the GMFS implementation for the robotics warehouse coor
 - `plot_robotics_results.py`: Plots one scaling sweep.
 - `plot_n100_noise_comparison.py`: Plots the n=100 clean/noisy comparison.
 - `config_robotics.json`: Legacy n=25 smoke/default config.
+- `config_robotics_n25.json`: Legacy n=25 sweep config.
 - `config_robotics_n1000.json`: n=1000 scaling experiment.
 - `config_robotics_n100_clean.json`, `config_robotics_n100_gaussian.json`, `config_robotics_n100_subgaussian.json`: n=100 robustness experiments.
 - `slurm/`: Generic Slurm templates. They intentionally avoid account names, personal paths, and site-specific partitions.
@@ -23,6 +24,12 @@ python plot_robotics_results.py --results_dir results_robotics_n1000
 Run the legacy n=25 default smoke config:
 ```bash
 python main.py --config config_robotics.json
+```
+
+Run or plot the legacy n=25 sweep:
+```bash
+python main.py --config config_robotics_n25.json
+python plot_robotics_results.py --results_dir results_robotics_n25
 ```
 
 Run one n=1000 kappa:
@@ -41,6 +48,7 @@ python plot_n100_noise_comparison.py
 Slurm entrypoints:
 ```bash
 sbatch slurm/run_robotics_n1000_array.slurm
+sbatch slurm/run_robotics_n25_array.slurm
 sbatch slurm/run_robotics_n100_noise_array.slurm
 sbatch slurm/plot_robotics.slurm
 ```

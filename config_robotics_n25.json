@@ -1,0 +1,26 @@
+{
+  "environment": "robotics",
+  "output_dir": "results_robotics_n25",
+  "k_values": [
+    1, 5, 10, 15, 20, 25, 30, 60, 100
+  ],
+  "n_agents": 25,
+  "grid_size": 5,
+  "radius": 0.3,
+  "L": 5.0,
+  "gamma": 0.95,
+  "alpha": 1.0,
+  "epsilon": 0.0,
+  "training_episodes": 250,
+  "training_horizon": 100,
+  "eval_horizon": 100,
+  "num_eval_runs": 30,
+  "num_workers": 1,
+  "seed": 12345,
+  "training_seed": 12345,
+  "eval_seed": 12345,
+  "mc_samples": 50,
+  "debug": true,
+  "debug_max_runs": 1,
+  "debug_focal_idx": 12
+}
