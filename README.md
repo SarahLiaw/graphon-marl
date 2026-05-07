@@ -1,84 +1,120 @@
 # GMFS: Graphon Mean-Field Subsampling
 
-This repository contains the GMFS implementation for the robotics warehouse coordination task, with offline value iteration (Algorithm 1) and online execution (Algorithm 2).
+This repository contains the GMFS implementation used to run the cooperative
+robotics coordination experiments, including offline value iteration and
+online execution. It is set up so the full sweep set used in the paper can be
+re-run from scratch.
 
-## Structure
-- `gmfs_core.py`: GMFS core logic (graphon weights, sampled Bellman operator, online execution diagnostics).
-- `gmfs_envs.py`: Robotics environment definitions (state/action, reward, congestion-sensitive transition).
-- `main.py`: Runner for training/evaluation from JSON configs.
-- `plot_robotics_results.py`: Plots one scaling sweep.
-- `plot_n100_noise_comparison.py`: Plots the n=100 clean/noisy comparison.
-- `config_robotics.json`: Legacy n=25 smoke/default config.
-- `config_robotics_n25.json`: Legacy n=25 sweep config.
-- `config_robotics_n1000.json`: n=1000 scaling experiment.
-- `config_robotics_n100_clean.json`, `config_robotics_n100_gaussian.json`, `config_robotics_n100_subgaussian.json`: n=100 robustness experiments.
-- `slurm/`: Generic Slurm templates. They intentionally avoid account names, personal paths, and site-specific partitions.
+## Layout
+- `gmfs_core.py` — GMFS core (graphon weights, sampled Bellman operator,
+  online execution diagnostics, optional graphon-noise and uniform-sampling
+  modes).
+- `gmfs_envs.py` — Robotics environment definitions, including the localized
+  congestion-sensitive transition and reward.
+- `main.py` — Runner for training/evaluation from JSON configs.
+- `plot_robotics_results.py` — Plot one scaling sweep.
+- `plot_n100_noise_comparison.py` — Legacy n=100 clean / Gaussian / subgaussian
+  comparison.
+- `plot_graphon_learning_experiment.py` — n=100 graphon-learning noise figures
+  (reference, Gaussian, subgaussian; weight maps; reference-minus-perturbed
+  return gap).
+- `plot_localized_experiment.py` — n=1000 localized experiment figures
+  (return-vs-κ for graphon vs. uniform sampling, perception heatmaps,
+  power-law layout, noise robustness).
+- `plot_robotics_uniform_comparison.py` — Side-by-side comparison of graphon
+  and uniform sampling sweeps.
+- `slurm/` — Portable Slurm templates. They use a relative `REPO_DIR` and a
+  `PYTHON` env override, with no hard-coded site paths or accounts.
+
+## Configs
+All run configs live in `configs/`:
+- `configs/config_robotics.json`, `configs/config_robotics_n25.json` —
+  legacy n=25 smoke / sweep configs.
+- `configs/config_robotics_n1000.json` — n=1000 baseline scaling experiment.
+- `configs/config_robotics_n1000_uniform.json` — n=1000 with uniform
+  (non-graphon) neighbor sampling, used as the baseline for the
+  topology-aware comparison.
+- `configs/config_robotics_n100_clean.json`,
+  `configs/config_robotics_n100_gaussian.json`,
+  `configs/config_robotics_n100_subgaussian.json` — n=100 graphon-noise
+  robustness.
+- `configs/config_robotics_n1000_localized_graphon.json`,
+  `configs/config_robotics_n1000_localized_uniform.json` — n=1000 localized
+  power-law-x setup, with graphon-weighted vs. uniform sampling.
+- `configs/config_robotics_n1000_localized_gaussian.json`,
+  `configs/config_robotics_n1000_localized_subgaussian.json` — n=1000
+  localized setup under Gaussian and bounded sub-gaussian graphon-weight
+  perturbations.
 
 ## Quick Start
-Run the n=1000 scaling sweep:
+n=1000 baseline scaling sweep:
 ```bash
-python main.py --config config_robotics_n1000.json
+python main.py --config configs/config_robotics_n1000.json
 python plot_robotics_results.py --results_dir results_robotics_n1000
 ```
 
-Run the legacy n=25 default smoke config:
+n=1000 graphon vs. uniform sampling (localized, power-law layout):
 ```bash
-python main.py --config config_robotics.json
+python main.py --config configs/config_robotics_n1000_localized_graphon.json
+python main.py --config configs/config_robotics_n1000_localized_uniform.json
+python plot_localized_experiment.py
 ```
 
-Run or plot the legacy n=25 sweep:
+n=1000 localized noise robustness (Gaussian / bounded sub-gaussian):
 ```bash
-python main.py --config config_robotics_n25.json
-python plot_robotics_results.py --results_dir results_robotics_n25
+python main.py --config configs/config_robotics_n1000_localized_gaussian.json
+python main.py --config configs/config_robotics_n1000_localized_subgaussian.json
+python plot_localized_experiment.py
 ```
 
-Run one n=1000 kappa:
+n=100 graphon-noise robustness:
 ```bash
-python main.py --config config_robotics_n1000.json --kappa 30
+python main.py --config configs/config_robotics_n100_clean.json
+python main.py --config configs/config_robotics_n100_gaussian.json
+python main.py --config configs/config_robotics_n100_subgaussian.json
+python plot_graphon_learning_experiment.py
 ```
 
-Run the n=100 clean/noisy sweeps:
+Run a single κ inside a sweep:
 ```bash
-python main.py --config config_robotics_n100_clean.json
-python main.py --config config_robotics_n100_gaussian.json
-python main.py --config config_robotics_n100_subgaussian.json
-python plot_n100_noise_comparison.py
+python main.py --config configs/config_robotics_n1000.json --kappa 30
 ```
 
-Slurm entrypoints:
+## Slurm
+Generic array templates (no site-specific account / partition / paths):
 ```bash
 sbatch slurm/run_robotics_n1000_array.slurm
-sbatch slurm/run_robotics_n25_array.slurm
+sbatch slurm/run_robotics_n1000_uniform_array.slurm
+sbatch slurm/run_robotics_n1000_localized_sampling_array.slurm
+sbatch slurm/run_robotics_n1000_localized_noise_array.slurm
 sbatch slurm/run_robotics_n100_noise_array.slurm
+sbatch slurm/run_robotics_n25_array.slurm
 sbatch slurm/plot_robotics.slurm
 ```
 
-The Slurm templates default to `python` from the active environment. Override with:
+Override the Python interpreter or repo location:
 ```bash
-PYTHON=/path/to/python sbatch slurm/run_robotics_n1000_array.slurm
+PYTHON=/path/to/python REPO_DIR=/path/to/repo \
+  sbatch slurm/run_robotics_n1000_array.slurm
 ```
 
+Add `--partition`, `--account`, or other site-specific `#SBATCH` directives
+on the `sbatch` command line as appropriate to your cluster.
+
 ## Outputs
-Each kappa run writes:
-- `results_robotics_n1000/kappa_<k>/data.json` and `data_full.json`
-- Debug plots (when `debug=true`) like `g2_trace_k<k>.png`, `action_fracs_k<k>.png`
+Each κ run writes:
+- `<results_dir>/kappa_<k>/data.json` and `data_full.json`
+- Optional debug plots (when `debug=true`): `g2_trace_k<k>.png`,
+  `action_fracs_k<k>.png`
 - Perception/coordination plots in `<results_dir>/plots/`
 - Summary tables in `<results_dir>/plots/kappa_summary.csv` and `.json`
 
-## Notes
-- The perception heatmaps visualize **one focal agent** (center agent by default).
-- \(\kappa\) controls **sampling resolution**, not the physical interaction radius.
-- Generated result directories, plots, logs, and caches are intentionally gitignored.
+Generated result directories, plots, logs, and caches are gitignored.
 
-## Graphon Notes
-This project uses a radial graphon for sampling neighbor interactions. The key pieces are:
-- **Graphon function**: \(W(x,y)=\mathbf{1}\{\|x-y\|_2 \le r\}\) with \(r=0.3\).
-- **Sampling**: each agent draws \(\kappa\) neighbors with replacement from the normalized graphon weights.
-- **Effect**: larger \(\kappa\) improves the accuracy of the empirical neighborhood estimate \(\hat g\).
-
-Example usage inside the runner:
-```python
-positions = build_grid_positions(n_agents=1000, grid_rows=25, grid_cols=40)
-graphon = RadialGraphon(radius=radius)
-W = graphon.get_normalized_weights(n_agents, positions=positions)
-```
+## Graphon
+The default neighbor graphon is the radius graphon
+\(W(\alpha,\beta)=\mathbf{1}\{\|\alpha-\beta\|_2\le r\}\) (`r=0.3` for the
+n=100 grid, `r=0.15` for the n=1000 power-law-x layout). Each agent draws κ
+neighbors with replacement from the row-normalized graphon weights; if a row
+has zero graphon mass after self-removal, the sampling distribution falls
+back to uniform over the other agents.

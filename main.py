@@ -21,7 +21,8 @@ from gmfs_core import (
 from gmfs_envs import (
     FormationState, FormationAction, FormationTransition, FormationReward,
     TrafficState, TrafficAction, TrafficTransition, TrafficReward,
-    RoboticsState, RoboticsAction, RoboticsTransition, RoboticsReward
+    RoboticsState, RoboticsAction, RoboticsTransition, RoboticsReward,
+    LocalizedRoboticsTransition, LocalizedRoboticsReward
 )
 
 def load_config(path):
@@ -96,25 +97,50 @@ def main():
     eval_seed = int(cfg.get('eval_seed', base_seed))
     noise_type = cfg.get('noise_type', None)
     noise_sigma = float(cfg.get('noise_sigma', 0.0))
+    sampling_mode = cfg.get('sampling_mode', 'graphon')
     results = {}
     
-    if env_name == 'robotics':
+    if env_name in ('robotics', 'robotics_localized'):
         states = [RoboticsState(i) for i in range(3)]
         actions = [RoboticsAction(i) for i in range(3)]
-        trans = RoboticsTransition()
-        rew = RoboticsReward(L=cfg.get('L', 2.0))
+        if env_name == 'robotics_localized':
+            trans = LocalizedRoboticsTransition(
+                threshold=cfg.get('localized_threshold', 0.35),
+                steepness=cfg.get('localized_steepness', 16.0),
+                mode=cfg.get('localized_transition_mode', 'congestion'),
+                stickiness=cfg.get('localized_stickiness', 0.97),
+            )
+            rew = LocalizedRoboticsReward(
+                threshold=cfg.get('localized_threshold', 0.35),
+                steepness=cfg.get('localized_steepness', 16.0),
+            )
+        else:
+            trans = RoboticsTransition()
+            rew = RoboticsReward(L=cfg.get('L', 2.0))
         
         grid_size = cfg.get('grid_size')
         grid_rows = cfg.get('grid_rows')
         grid_cols = cfg.get('grid_cols')
-        positions = build_grid_positions(
-            grid_size=grid_size,
-            n_agents=n_agents,
-            grid_rows=grid_rows,
-            grid_cols=grid_cols,
-        )
+        position_mode = cfg.get('position_mode', 'grid')
+        if position_mode == 'grid':
+            positions = build_grid_positions(
+                grid_size=grid_size,
+                n_agents=n_agents,
+                grid_rows=grid_rows,
+                grid_cols=grid_cols,
+            )
+        elif position_mode == 'power_law_x':
+            position_rng = np.random.RandomState(int(cfg.get('position_seed', base_seed)))
+            x_power = float(cfg.get('position_power', 0.45))
+            x_coords = position_rng.power(x_power, size=n_agents)
+            y_coords = position_rng.rand(n_agents)
+            positions = np.column_stack((x_coords, y_coords)).astype(float)
+        else:
+            raise ValueError(f"Unknown position_mode={position_mode!r}.")
         radius = cfg.get('radius', 0.3)
         graphon = RadialGraphon(radius=radius)
+        initial_state_mode = cfg.get('initial_state_mode', 'uniform')
+        initial_state_params = cfg.get('initial_state_params', {})
         
         # Value Iteration parameters
         training_steps = cfg.get('training_episodes', 100) # Steps of T_hat
@@ -185,6 +211,9 @@ def main():
                         positions=positions,
                         noise_type=noise_type,
                         noise_sigma=noise_sigma,
+                        sampling_mode=sampling_mode,
+                        initial_state_mode=initial_state_mode,
+                        initial_state_params=initial_state_params,
                     )
                     if capture_diagnostics:
                         ret, diag = outcome
@@ -257,6 +286,7 @@ def main():
             grid_size=-1 if grid_size is None else grid_size,
             grid_rows=-1 if grid_rows is None else grid_rows,
             grid_cols=-1 if grid_cols is None else grid_cols,
+            position_mode=position_mode,
             n_agents=n_agents,
         )
     else:
@@ -297,7 +327,8 @@ def main():
                     n_agents=n_agents, horizon=cfg.get('horizon', 100),
                     k=k, graphon=graphon, q_func=q_func,
                     state_space=states, action_space=actions,
-                    transition_func=trans, seed=eval_seed + 1000 * k + i
+                    transition_func=trans, seed=eval_seed + 1000 * k + i,
+                    sampling_mode=sampling_mode,
                 )
                 returns.append(ret)
                 if (run+1) % 5 == 0:

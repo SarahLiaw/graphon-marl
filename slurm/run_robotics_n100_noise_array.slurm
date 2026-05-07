@@ -13,9 +13,9 @@ set -euo pipefail
 REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 PYTHON="${PYTHON:-python}"
 CONFIGS=(
-  "config_robotics_n100_clean.json"
-  "config_robotics_n100_gaussian.json"
-  "config_robotics_n100_subgaussian.json"
+  "configs/config_robotics_n100_clean.json"
+  "configs/config_robotics_n100_gaussian.json"
+  "configs/config_robotics_n100_subgaussian.json"
 )
 KAPPA_LIST=(1 5 10 15 20 25)
 

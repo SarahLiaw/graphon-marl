@@ -12,7 +12,7 @@ set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 PYTHON="${PYTHON:-python}"
-CONFIG="${REPO_DIR}/config_robotics_n1000.json"
+CONFIG="${REPO_DIR}/configs/config_robotics_n1000.json"
 KAPPA_LIST=(1 3 5 10 15 20 25 30 60 100)
 KAPPA="${KAPPA_LIST[$SLURM_ARRAY_TASK_ID]}"
 

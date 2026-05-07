@@ -186,3 +186,73 @@ class RoboticsReward(RewardFunction):
     #     costs = {0:0.0, 1:0.05, 2:0.10}
     #     action_cost = costs[a_obj.value]
     #     return utility-action_cost
+
+
+class LocalizedRoboticsTransition(TransitionFunction):
+    """Robotics dynamics with a sharp local-congestion threshold."""
+    def __init__(self, threshold: float = 0.35, steepness: float = 16.0,
+                 mode: str = "congestion", stickiness: float = 0.97):
+        self.threshold = threshold
+        self.steepness = steepness
+        self.mode = mode
+        self.stickiness = stickiness
+
+    def sample_next_state(self, s_obj, a_obj, z, rng=None):
+        if rng is None:
+            rng = np.random
+        if self.mode == "sticky":
+            if rng.rand() < self.stickiness:
+                return RoboticsState(s_obj.value)
+            if rng.rand() < 0.75:
+                return RoboticsState(a_obj.value)
+            return RoboticsState(int(rng.choice([0, 1, 2])))
+
+        g = np.asarray(z, dtype=float)
+        total = float(np.sum(g))
+        if total > 0:
+            g = g / total
+        work_frac = float(g[2])
+        low_congestion = 1.0 / (1.0 + np.exp(self.steepness * (work_frac - self.threshold)))
+
+        if a_obj.value == 2:
+            success_prob = 0.05 + 0.90 * low_congestion
+            return RoboticsState(2) if rng.rand() < success_prob else RoboticsState(1)
+        if a_obj.value == 1:
+            if rng.rand() < 0.85:
+                return RoboticsState(1)
+            return RoboticsState(0)
+        if rng.rand() < 0.90:
+            return RoboticsState(0)
+        return RoboticsState(s_obj.value)
+
+
+class LocalizedRoboticsReward(RewardFunction):
+    """State-action reward whose best action depends nonlinearly on local work density."""
+    def __init__(self, threshold: float = 0.35, steepness: float = 16.0):
+        self.threshold = threshold
+        self.steepness = steepness
+        self.state_action_bonus = np.array(
+            [
+                [8.0, 5.0, -6.0],
+                [5.0, 9.0, 8.0],
+                [3.0, 5.0, 13.0],
+            ],
+            dtype=float,
+        )
+
+    def compute_reward(self, s_obj, a_obj, z):
+        g = np.asarray(z, dtype=float)
+        total = float(np.sum(g))
+        if total > 0:
+            g = g / total
+        work_frac = float(g[2])
+        congestion = 1.0 / (1.0 + np.exp(-self.steepness * (work_frac - self.threshold)))
+
+        if a_obj.value == 2:
+            locality_term = 55.0 * (1.0 - congestion) - 85.0 * congestion
+        elif a_obj.value == 0:
+            locality_term = 45.0 * congestion - 25.0 * (1.0 - congestion)
+        else:
+            locality_term = 12.0 - 18.0 * abs(work_frac - self.threshold)
+
+        return 90.0 + self.state_action_bonus[s_obj.value, a_obj.value] + locality_term

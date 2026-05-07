@@ -287,13 +287,35 @@ def online_execution(n_agents: int, horizon: int, k: int, graphon: Graphon,
                      focal_idx: int = None,
                      positions: np.ndarray = None,
                      noise_type: Optional[str] = None,
-                     noise_sigma: float = 0.0):
+                     noise_sigma: float = 0.0,
+                     sampling_mode: str = "graphon",
+                     initial_state_mode: str = "uniform",
+                     initial_state_params: Optional[Dict[str, Any]] = None):
     """Run Algo 2."""
     rng = np.random.RandomState(seed)
     # Init agents
     agents = [Agent(i, (i+1)/n_agents, state_space, action_space) for i in range(n_agents)]
-    for a in agents:
-        a.reset(rng.choice(state_space))
+    if initial_state_params is None:
+        initial_state_params = {}
+
+    if initial_state_mode == "uniform" or positions is None:
+        for a in agents:
+            a.reset(rng.choice(state_space))
+    elif initial_state_mode == "x_split_work":
+        x_coords = np.asarray(positions, dtype=float)[:, 0]
+        split_quantile = float(initial_state_params.get("split_quantile", 0.5))
+        split_value = float(np.quantile(x_coords, split_quantile))
+        high_work_prob = float(initial_state_params.get("high_work_prob", 0.90))
+        low_work_prob = float(initial_state_params.get("low_work_prob", 0.05))
+        transit_prob = float(initial_state_params.get("transit_prob", 0.05))
+        for i, a in enumerate(agents):
+            work_prob = high_work_prob if x_coords[i] <= split_value else low_work_prob
+            idle_prob = max(0.0, 1.0 - transit_prob - work_prob)
+            probs = np.array([idle_prob, transit_prob, work_prob], dtype=float)
+            probs = probs / probs.sum()
+            a.reset(state_space[int(rng.choice(len(state_space), p=probs))])
+    else:
+        raise ValueError(f"Unknown initial_state_mode={initial_state_mode!r}.")
 
     state_to_idx = q_func.state_to_idx
     if positions is not None:
@@ -312,9 +334,12 @@ def online_execution(n_agents: int, horizon: int, k: int, graphon: Graphon,
             # Bounded uniform noise; subgaussian with parameter sigma/sqrt(3).
             W = W + rng.uniform(-noise_sigma, noise_sigma, W.shape)
         W = np.clip(W, 0.0, None)
+        np.fill_diagonal(W, 0.0)
         row_sums = W.sum(axis=1, keepdims=True)
         row_sums[row_sums == 0] = 1.0
         W = W / row_sums
+    if sampling_mode not in ("graphon", "uniform"):
+        raise ValueError(f"Unknown sampling_mode={sampling_mode!r}. Expected 'graphon' or 'uniform'.")
     rewards = []
     avg_hat_g2 = []
     avg_true_g2 = []
@@ -334,6 +359,12 @@ def online_execution(n_agents: int, horizon: int, k: int, graphon: Graphon,
         )
         one_hot_states = np.eye(len(state_space), dtype=float)[state_indices]
         true_g_all = W @ one_hot_states
+        if sampling_mode == "graphon":
+            sampling_g_all = true_g_all
+        else:
+            total_state_counts = np.bincount(state_indices, minlength=len(state_space)).astype(float)
+            denom = max(n_agents - 1, 1)
+            sampling_g_all = (total_state_counts[None, :] - one_hot_states) / float(denom)
 
         if return_diagnostics and t == 0:
             agent_states_t0 = state_indices.tolist()
@@ -343,11 +374,11 @@ def online_execution(n_agents: int, horizon: int, k: int, graphon: Graphon,
         hat_g2_step = []
         hat_g_probs = []
         if k > 0:
-            p0 = np.clip(true_g_all[:, 0], 0.0, 1.0)
+            p0 = np.clip(sampling_g_all[:, 0], 0.0, 1.0)
             g0 = rng.binomial(k, p0)
             remaining = k - g0
             denom = np.clip(1.0 - p0, 1e-12, None)
-            p1_cond = np.divide(true_g_all[:, 1], denom, out=np.zeros_like(p0), where=denom > 0.0)
+            p1_cond = np.divide(sampling_g_all[:, 1], denom, out=np.zeros_like(p0), where=denom > 0.0)
             p1_cond = np.clip(p1_cond, 0.0, 1.0)
             g1 = rng.binomial(remaining, p1_cond)
             g2 = remaining - g1
@@ -361,7 +392,12 @@ def online_execution(n_agents: int, horizon: int, k: int, graphon: Graphon,
             if return_diagnostics:
                 if i == focal_idx:
                     if k > 0:
-                        neighbors = rng.choice(n_agents, size=k, p=W[i], replace=True)
+                        if sampling_mode == "graphon":
+                            neighbor_probs = W[i]
+                        else:
+                            neighbor_probs = np.full(n_agents, 1.0 / max(n_agents - 1, 1), dtype=float)
+                            neighbor_probs[i] = 0.0
+                        neighbors = rng.choice(n_agents, size=k, p=neighbor_probs, replace=True)
                         g_hat = tuple(np.bincount(state_indices[neighbors], minlength=len(state_space)).tolist())
                     else:
                         neighbors = np.asarray([], dtype=int)
@@ -434,6 +470,7 @@ def online_execution(n_agents: int, horizon: int, k: int, graphon: Graphon,
             "focal_neighbors": focal_neighbors,
             "focal_neighbors_over_time": focal_neighbors_over_time,
             "focal_hat_g": focal_hat_g,
+            "sampling_mode": sampling_mode,
             "agent_states_t0": agent_states_t0,
             "agent_states_t_end": agent_states_t_end
         }
