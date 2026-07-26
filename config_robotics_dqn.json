@@ -1,0 +1,22 @@
+{
+  "output_dir": "results_robotics_dqn",
+  "k_values": [8],
+  "n_agents": 25,
+  "grid_size": 5,
+  "radius": 0.3,
+  "W": 20.0,
+  "work_cost": 5.0,
+  "step_rate": 0.5,
+  "noise_std": 0.05,
+  "gamma": 0.95,
+  "n_episodes": 600,
+  "train_horizon": 50,
+  "eval_horizon": 100,
+  "num_eval_runs": 10,
+  "lr": 0.001,
+  "batch_size": 128,
+  "eps_decay_episodes": 450,
+  "target_sync_every": 10,
+  "seed": 12345,
+  "use_cuda": false
+}
